@@ -1,32 +1,35 @@
 import {Observable} from "rxjs";
 import {Observer} from "rxjs";
-import {Subject} from "rxjs/Subject";
+import {Subject} from "rxjs";
 
+// interface for private object format for render
 interface INode{
     tag: 'span' | 'div' | '#text' | 'button',
     attributes?: {
+        // TODO: add strict attribute keys
         [attributeKey: string]: string
     },
     children?: Array<INode>
 }
-
+// private renderer object for group template and render context
 class Component{
     constructor(
         public tmpl: INode,
         public context: object
     ) {}
 }
-
+// factory for create component from different templates
 class ComponentFactory{
     private xmlToINodeAdapter(tmpl: string): INode{
+        // TODO: add xml(html) parser to INode
         const node: INode = {
             tag: "div"
         }
-
         return node
     }
 
     private jsonToINodeAdapter(tmpl: string): INode{
+        // TODO: add json string to INode parser
         const node: INode = {
             tag: "div"
         }
@@ -46,16 +49,19 @@ class ComponentFactory{
     }
 }
 
+// base render which can render ```Component```
 class Renderer{
     constructor(
         private rootNode: HTMLElement
     ) {}
 
+    // method for append simple text to element
     private appendTextNode(conent: string, parent: HTMLElement): void {
         const textNode = document.createTextNode(conent);
         parent.appendChild(textNode);
     }
 
+    // method for render single node
     private renderElement(node: INode, parent: HTMLElement, context: object): Observable<HTMLElement> {
         return Observable.create( (observer: Observer<HTMLElement>) => {
             let result: HTMLElement;
@@ -81,24 +87,14 @@ class Renderer{
                 default:
                     console.log(`unknow element ${node.tag}`);
             }
-            // if (node.attributes !== undefined) {
-            //     const bindContextVar = node.attributes['bind'];
-            //     if ( bindContextVar !== null && bindContextVar !== undefined ) {
-            //         const bindAttributeKey = bindContextVar;
-            //         const contextVar = context[bindAttributeKey].subscribe( next => {
-            //             while (result.hasChildNodes()) {
-            //                 result.removeChild(result.firstChild);
-            //             }
-            //             this.appendTextNode(next, result);
-            //         });
-            //     }
-            // }
             observer.next(result);
         });
     }
 
     private renderNode( node: INode, parent: HTMLElement, context: object): void {
         const hasAttributes: boolean = node.attributes !== undefined;
+
+        // before render process hook
         if (hasAttributes) {
             const repeatAttribute = node.attributes['repeat'];
             if (repeatAttribute !== null && repeatAttribute !== undefined) {
@@ -109,10 +105,13 @@ class Renderer{
                 delete nodeClone.attributes['repeat'];
                 contextVar
                     .subscribe( value => {
+                        // clear prevent childs
+                        // TODO: fix bug with clear sublings elements
                         while (parent.hasChildNodes()) {
                             parent.removeChild(parent.firstChild);
                         }
-                        const processes = value.map( (el, key) => {
+                        value.forEach( (el, key) => {
+                            // create nested context for child nodes
                             const nextContext = Object.create(context, {
                                 nextVal: {
                                     value: el,
@@ -130,43 +129,52 @@ class Renderer{
                             this.renderNode(nodeClone, parent, nextContext);
                         } );
                     });
-                // prevent default render process
+                // prevent default render process && start it by hand
                 return;
             }
+        }
+        // start render single node
+        // TODO: remove nextElement variable mutation
+        let nextElement = this.renderElement(node, parent, context);
 
+        // after default render process hook
+        if(hasAttributes){
+            // catch click attribute for bind event subject from context
+            const clickContextVar = node.attributes['click'];
+            if(clickContextVar !== undefined){
+                nextElement = nextElement.map( next => {
+                    next.onclick = event => context[clickContextVar].next(event)
+                    return next
+                })
+            }
+
+            // catch bind for render nested text node
+            // TODO: add warn which tell that all childs will be destroyed
             const bindContextVar = node.attributes['bind'];
             if ( bindContextVar !== null && bindContextVar !== undefined ) {
                 const bindAttributeKey = bindContextVar;
-                const nextElement: Observable<HTMLElement> = this.renderElement(node, parent, context)
                 const contextVar: Observable<any> = context[bindAttributeKey]
 
-                nextElement.combineLatest(contextVar).subscribe( ([nextElement, nextValue]) => {
-                    while (nextElement.hasChildNodes()) {
-                        nextElement.removeChild(nextElement.firstChild);
-                    }
-                    this.appendTextNode(nextValue, nextElement)
-                });
-                return;
-            }
-        }
-        let nextElement = this.renderElement(node, parent, context);
-
-        if(hasAttributes){
-            const clickContextVar = node.attributes['click'];
-            if(clickContextVar !== undefined){
-                nextElement = nextElement.do( next => {
-                    next.onclick = event => context[clickContextVar].next(event)
-                })
+                nextElement = nextElement
+                    .combineLatest(contextVar)
+                    .do( ([nextElement, nextValue]) => {
+                        while (nextElement.hasChildNodes()) {
+                            nextElement.removeChild(nextElement.firstChild);
+                        }
+                        this.appendTextNode(nextValue, nextElement)
+                    })
+                    .map( ([nextElement]) => nextElement );
             }
         }
 
+        // when single node rendered start render process for childs
         nextElement.subscribe( next => {
             if ( next !== null && next !== undefined && node.children !== undefined && node.children !== null ) {
                 node.children.forEach( el => {
+                    // TODO: ??? add async renderNode ???
                     this.renderNode(el, next, context);
                 });
             }
-            //return nextElement;
         });
     }
 
@@ -174,16 +182,19 @@ class Renderer{
         this.renderNode(component.tmpl, this.rootNode, component.context);
     }
 }
-
+// factory for create renderer on dom nodes
 class RenderFactory{
     public static create(node: HTMLElement) {
         return new Renderer(node);
     }
 }
 
+// --------- example app -----------
+// init core services
 const renderer = RenderFactory.create(document.body);
 const componentFactory = new ComponentFactory();
 
+// create simple component with context by hands
 const cmpTemplate: INode = {
     tag: "div",
     children: [{
@@ -246,17 +257,32 @@ const cmpTemplate: INode = {
             }]
         }]
     }]
-}
+};
+// component which print current timer state when click
 class CmpContext{
-    private clickEvent: Subject<MouseEvent> = new Subject();
-    private text = Observable.interval(1e3).sample(this.clickEvent);
-    private arr = Observable.interval(100).map(next => Observable.of(next)).bufferCount(10).sample(this.clickEvent);
+    private clickEvent: Subject<MouseEvent> =
+        new Subject();
+
+    private text =
+        Observable
+            .interval(1e3)
+            .sample(this.clickEvent);
+
+    private arr =
+        Observable
+            .interval(100)
+            .map(next =>
+                Observable
+                    .of(next))
+            .bufferCount(10)
+            .sample(this.clickEvent);
+
     constructor(){}
 }
-
 const cmp = componentFactory.createFromINodeObject(
     cmpTemplate,
     new CmpContext()
 );
 
+// run renderer
 renderer.render(cmp);
